@@ -1,0 +1,4 @@
+export PROJECT=./
+export PYENV=$PROJECT/venv/
+
+source $PYENV/bin/activate
