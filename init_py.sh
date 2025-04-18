@@ -10,8 +10,8 @@ fi
 
 if [ -f "requirements.txt" ]; then
     echo "Installing requirements from requirements.txt..."
-    ./venv/bin/activate.sh
-    python3 -m pip install -r requirements.txt
+    source ./venv/bin/activate
+    pip install -r requirements.txt
     deactivate
     echo "requirements installed. source sourceme to activate."
 else
