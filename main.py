@@ -1,12 +1,27 @@
+#!/home/lars/projects/nvidia-warp-stuff/venv/bin/python3.12
+
+SKYBOX_PATH = "img/blaubeuren_night_4k.exr"
+# SKYBOX_PATH = "img/blaubeuren_night_4k.png"
 
 import os
 import numpy as np
-from pxr import Usd, UsdGeom
+# from pxr import UsdGeom
 import warp as wp
-import warp.examples
+# import warp.examples
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, RangeSlider
-import colorsys
+# import colorsys
+
+try:
+    from PIL import Image
+except ImportError as err:
+    raise ImportError("This example requires the Pillow package. Please install it with 'pip install Pillow'.") from err
+
+import OpenEXR as exr
+import Imath
+from pathlib import Path
+
+from raytrace_fun import *
 from spherical_fun import *
 
 @wp.func
@@ -57,62 +72,27 @@ def map_value_to_color(value: float, min_val: float, max_val: float) -> wp.vec3:
     
     return wp.vec3(r + m, g + m, b + m)
 
-@wp.struct
-class Sphere:
-    pos: wp.vec3
-    radius: float
-
-@wp.struct
-class Ray:
-    origin: wp.vec3
-    direction: wp.vec3
-
-@wp.struct
-class HitInfo:
-    didHit: bool
-    dist: float
-    pos: wp.vec3
-    normal: wp.vec3
-    localcoord: wp.vec3
-
 @wp.func
-def cartesian_to_spherical(pos: wp.vec3) -> wp.vec3:
-    r = wp.len(pos)
-    t = wp.atan2(wp.sqrt(pos.x * pos.x + pos.y * pos.y), pos.z)
-    p = wp.atan2(pos.y, pos.x)
-    return wp.vec3(float(r), float(t), float(p))
+def sample_environment(ray: Ray, skybox: wp.array(dtype=wp.vec3, ndim=2)) -> wp.vec3:
+    azimuth = wp.atan2(ray.direction.y, ray.direction.x)
+    inclination = wp.acos(ray.direction.z)
 
-@wp.func
-def ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo:
-    hitInfo = HitInfo(didHit=False, dist=0.0, pos=wp.vec3(0.0, 0.0, 0.0), normal=wp.vec3(0.0, 0.0, 0.0), localcoord=wp.vec3(0.0, 0.0, 0.0))
-    offsetRayOrigin = ray.origin - sphere.pos
+    # Map spherical coordinates to [0, 1]
+    u = (azimuth + wp.pi) / (2.0 * wp.pi)
+    v = inclination / wp.pi
 
-    # Solve for distance with a quadratic equation
-    a = wp.dot(ray.direction, ray.direction)
-    b = 2.0 * wp.dot(offsetRayOrigin, ray.direction)
-    c = wp.dot(offsetRayOrigin, offsetRayOrigin) - sphere.radius * sphere.radius
+    # Calculate the index in the HDRI array
+    width = skybox.shape[1]
+    height = skybox.shape[0]
 
-    # Quadratic discriminant
-    discriminant = b * b - 4.0 * a * c
-
-    # If d > 0, the ray intersects the sphere => calculate hitinfo
-    if discriminant >= 0.0:
-        dist = (-b - wp.sqrt(wp.abs(discriminant))) / (2.0 * a)
-
-        # (If the intersection happens behind the ray, ignore it)
-        if dist >= 0.0:
-            hitInfo.didHit = True
-            hitInfo.dist = dist
-            hitInfo.pos = ray.origin + ray.direction * dist
-            hitInfo.normal = wp.normalize(hitInfo.pos - sphere.pos)
-            hitInfo.localcoord = cartesian_to_spherical(hitInfo.normal)
-
-    return hitInfo
+    # Return the color from the HDRI
+    return skybox[int(v*float(height))][int(u*float(width))]
 
 @wp.kernel
 def draw(cam_pos: wp.vec3, width: int, height: int, 
          pixels: wp.array(dtype=wp.vec3), color_min: float, color_max: float,
-         l_param: int, m_param: int):
+         l_param: int, m_param: int,
+         skybox: wp.array(dtype=wp.vec3, ndim=2)):
     tid = wp.tid()
 
     x = tid % width
@@ -147,9 +127,54 @@ def draw(cam_pos: wp.vec3, width: int, height: int,
     if hitinfo.didHit:
         value = our_sample(hitinfo.localcoord[1], hitinfo.localcoord[2], l_param, m_param)
         color = map_value_to_color(value, color_min, color_max)
-    
+    else:
+        color = sample_environment(ray, skybox)
+
     pixels[tid] = color
 
+def load_exr(path, resize_width, resize_height):
+    exrfile = exr.InputFile(Path(path).as_posix())
+    
+    header = exrfile.header()
+    dw = header['displayWindow']
+    size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
+    
+    rgb_channels = ['R', 'G', 'B']
+    raw_bytes = [exrfile.channel(c, Imath.PixelType(Imath.PixelType.FLOAT)) for c in rgb_channels]
+    
+    rgb_vectors = [np.frombuffer(bytes, dtype=np.float32) for bytes in raw_bytes]
+    rgb_maps = [vec.reshape(size[1], size[0]) for vec in rgb_vectors]
+    rgb_map = np.stack(rgb_maps, axis=-1)
+    
+    # Some of this is probably less efficient than it could be... whatever ¯\_(ツ)_/¯
+    img = Image.fromarray((rgb_map * 255).astype(np.uint8))
+    resized_img = img.resize((resize_width, resize_height))
+    
+    target_np = np.array(resized_img)
+    target_np_norm = target_np.astype(np.float32) / 255.0
+    target_wp = wp.array(target_np_norm, dtype=wp.vec3)
+    
+    return target_wp
+
+def load_image(path, resize_width, resize_height):
+    file_extension = os.path.splitext(path)[1].lower()
+    
+    if file_extension == '.exr':
+        return load_exr(path, resize_width, resize_height)
+    else:
+        target_base = Image.open(os.path.relpath(path))
+        target_resized = target_base.resize((resize_width, resize_height))
+        target_np = np.array(target_resized)
+
+        if target_np.shape[2] == 4:
+            target_np = target_np[:, :, :3]
+        if target_np.shape[2] != 3:
+            raise ValueError("Image must be RGB or RGBA to be converted to vec3.")
+
+        target_np_norm = target_np.astype(np.float32) / 255.0
+        target_wp = wp.array(target_np_norm, dtype=wp.vec3)
+
+        return target_wp
 
 class Example:
     def __init__(self, height=1024, width=1024):
@@ -169,6 +194,7 @@ class Example:
         self.m_param = 1  # Order
 
         self.pixels = wp.zeros(self.width * self.height, dtype=wp.vec3)
+        self.skybox = load_image(SKYBOX_PATH, 1024, 1024)
 
     def update_camera(self):
         # Update camera angle
@@ -191,7 +217,8 @@ class Example:
                 dim=self.width * self.height,
                 inputs=[self.cam_pos, self.width, self.height, 
                         self.pixels, self.color_min, self.color_max,
-                        self.l_param, self.m_param],
+                        self.l_param, self.m_param,
+                        self.skybox],
             )
 
 if __name__ == "__main__":
