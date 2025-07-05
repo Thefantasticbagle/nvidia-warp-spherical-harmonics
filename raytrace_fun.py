@@ -38,11 +38,16 @@ def ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo:
     # Quadratic discriminant
     discriminant = b * b - 4.0 * a * c
 
-    # If d > 0, the ray intersects the sphere => calculate hitinfo
+    # If d >= 0, the ray intersects the sphere
     if discriminant >= 0.0:
-        dist = (-b - wp.sqrt(wp.abs(discriminant))) / (2.0 * a)
+        sqrt_discriminant = wp.sqrt(discriminant)
+        dist = (-b - sqrt_discriminant) / (2.0 * a)
 
-        # (If the intersection happens behind the ray, ignore it)
+        # If intersection is behind the ray, try the far intersection
+        if dist < 0.0:
+            dist = (-b + sqrt_discriminant) / (2.0 * a)
+
+        # If we have a valid intersection
         if dist >= 0.0:
             hitInfo.didHit = True
             hitInfo.dist = dist
@@ -51,3 +56,30 @@ def ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo:
             hitInfo.localcoord = cartesian_to_spherical(hitInfo.normal)
 
     return hitInfo
+
+# @wp.func
+# def ray_sphere(ray: Ray, sphere: Sphere) -> HitInfo:
+#     hitInfo = HitInfo(didHit=False, dist=0.0, pos=wp.vec3(0.0, 0.0, 0.0), normal=wp.vec3(0.0, 0.0, 0.0), localcoord=wp.vec3(0.0, 0.0, 0.0))
+#     offsetRayOrigin = ray.origin - sphere.pos
+#
+#     # Solve for distance with a quadratic equation
+#     a = wp.dot(ray.direction, ray.direction)
+#     b = 2.0 * wp.dot(offsetRayOrigin, ray.direction)
+#     c = wp.dot(offsetRayOrigin, offsetRayOrigin) - sphere.radius * sphere.radius
+#
+#     # Quadratic discriminant
+#     discriminant = b * b - 4.0 * a * c
+#
+#     # If d > 0, the ray intersects the sphere => calculate hitinfo
+#     if discriminant >= 0.0:
+#         dist = (-b - wp.sqrt(wp.abs(discriminant))) / (2.0 * a)
+#
+#         # (If the intersection happens behind the ray, ignore it)
+#         if dist >= 0.0:
+#             hitInfo.didHit = True
+#             hitInfo.dist = dist
+#             hitInfo.pos = ray.origin + ray.direction * dist
+#             hitInfo.normal = wp.normalize(hitInfo.pos - sphere.pos)
+#             hitInfo.localcoord = cartesian_to_spherical(hitInfo.normal)
+#
+#     return hitInfo

@@ -1,28 +1,21 @@
 #!/home/lars/projects/nvidia-warp-stuff/venv/bin/python3.12
 
-SKYBOX_PATH = "img/blaubeuren_night_4k.exr"
+# SKYBOX_PATH = "img/blaubeuren_night_4k.exr"
+SKYBOX_PATH = "img/meadow_2_4k.png"
+# SKYBOX_PATH = "img/meadow_2_4k.exr"
+# SKYBOX_PATH = "img/studio_small_09_4k.exr"
+# SKYBOX_PATH = "img/studio_small_09_4k.png"
+BAKE_SAMPLE_COUNT = 6000
 # SKYBOX_PATH = "img/blaubeuren_night_4k.png"
 
-import os
 import numpy as np
-# from pxr import UsdGeom
 import warp as wp
-# import warp.examples
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, RangeSlider
-# import colorsys
-
-try:
-    from PIL import Image
-except ImportError as err:
-    raise ImportError("This example requires the Pillow package. Please install it with 'pip install Pillow'.") from err
-
-import OpenEXR as exr
-import Imath
-from pathlib import Path
 
 from raytrace_fun import *
 from spherical_fun import *
+from image_fun import *
 
 @wp.func
 def our_sample(theta: float, phi: float, l: int, m: int):
@@ -36,63 +29,32 @@ def our_sample(theta: float, phi: float, l: int, m: int):
     return spherical_harmonic_real(l, m, theta, phi)
 
 @wp.func
-def map_value_to_color(value: float, min_val: float, max_val: float) -> wp.vec3:
-    # Normalize value to [0,1] range for hue
-    normalized = wp.clamp((value - min_val) / (max_val - min_val), 0.0, 1.0)
+def cartesian_to_spherical(v: wp.vec3) -> wp.vec2:
+    """
+    Converts a 3D Cartesian vector to Spherical coordinates (theta, phi)
+    using a Y-up coordinate system.
+    theta: polar angle from the Y-axis [0, pi]
+    phi: azimuthal angle in the XZ-plane [-pi, pi]
+    """
+    r = wp.length(v)
+    if r < 1e-8:
+        return wp.vec2(0.0, 0.0)
     
-    # Use the normalized value as hue (0-1), with full saturation and value
-    # Convert HSV to RGB (we need to do this manually as warp doesn't have colorsys)
-    h = normalized
-    s = 1.0
-    v = 1.0
+    v_norm = v / r
     
-    # HSV to RGB conversion
-    c = v * s
+    # Y-up convention
+    phi = wp.atan2(v_norm.z, v_norm.x)
+    theta = wp.acos(wp.clamp(v_norm.y, -1.0, 1.0))
     
-    # Implementing mod operation manually since wp.fmod doesn't exist
-    h_times_6 = h * 6.0
-    h_times_6_mod_2 = h_times_6 - 2.0 * wp.floor(h_times_6 / 2.0)
-    
-    x = c * (1.0 - wp.abs(h_times_6_mod_2 - 1.0))
-    m = v - c
-    
-    r, g, b = 0.0, 0.0, 0.0
-    if h < 1.0/6.0:
-        r, g, b = c, x, 0.0
-    elif h < 2.0/6.0:
-        r, g, b = x, c, 0.0
-    elif h < 3.0/6.0:
-        r, g, b = 0.0, c, x
-    elif h < 4.0/6.0:
-        r, g, b = 0.0, x, c
-    elif h < 5.0/6.0:
-        r, g, b = x, 0.0, c
-    else:
-        r, g, b = c, 0.0, x
-    
-    return wp.vec3(r + m, g + m, b + m)
-
-@wp.func
-def sample_environment(ray: Ray, skybox: wp.array(dtype=wp.vec3, ndim=2)) -> wp.vec3:
-    azimuth = wp.atan2(ray.direction.y, ray.direction.x)
-    inclination = wp.acos(ray.direction.z)
-
-    # Map spherical coordinates to [0, 1]
-    u = (azimuth + wp.pi) / (2.0 * wp.pi)
-    v = inclination / wp.pi
-
-    # Calculate the index in the HDRI array
-    width = skybox.shape[1]
-    height = skybox.shape[0]
-
-    # Return the color from the HDRI
-    return skybox[int(v*float(height))][int(u*float(width))]
+    return wp.vec2(theta, phi)
 
 @wp.kernel
 def draw(cam_pos: wp.vec3, width: int, height: int, 
          pixels: wp.array(dtype=wp.vec3), color_min: float, color_max: float,
          l_param: int, m_param: int,
-         skybox: wp.array(dtype=wp.vec3, ndim=2)):
+         skybox: wp.array(dtype=wp.vec3, ndim=2),
+         seed: int,
+         sh_coeffs: wp.array(dtype=wp.vec3)):
     tid = wp.tid()
 
     x = tid % width
@@ -111,70 +73,58 @@ def draw(cam_pos: wp.vec3, width: int, height: int,
     
     # Create ray direction using camera basis vectors
     rd = wp.normalize(forward + right * sx + up * sy)
-    
     ray = Ray()
     ray.origin = ro
     ray.direction = rd
+    rd_spherical = cartesian_to_spherical(rd)
 
     color = wp.vec3(0.0, 0.0, 0.0)
 
-    # Check spheres
     sphere = Sphere()
     sphere.pos = wp.vec3(0.0, 0.0, 0.0)
     sphere.radius = 1.0
 
     hitinfo = ray_sphere(ray, sphere)
     if hitinfo.didHit:
-        value = our_sample(hitinfo.localcoord[1], hitinfo.localcoord[2], l_param, m_param)
-        color = map_value_to_color(value, color_min, color_max)
+        norm = hitinfo.normal
+        norm_spherical = cartesian_to_spherical(norm)
+        # norm_spherical = rd_spherical
+
+        for l in range(l_param):
+            for m in range(-l, l + 1):
+                index = sh_index(l, m)
+                y_lm = spherical_harmonic_real(l, m, norm_spherical.x, norm_spherical.y)
+                contribution = sh_coeffs[index] * y_lm
+                color += contribution
+
+        color = wp.min(wp.max(color, wp.vec3(0.0)), wp.vec3(1.0))
     else:
-        color = sample_environment(ray, skybox)
+        color = sample_skybox(rd_spherical, skybox)
 
     pixels[tid] = color
 
-def load_exr(path, resize_width, resize_height):
-    exrfile = exr.InputFile(Path(path).as_posix())
-    
-    header = exrfile.header()
-    dw = header['displayWindow']
-    size = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
-    
-    rgb_channels = ['R', 'G', 'B']
-    raw_bytes = [exrfile.channel(c, Imath.PixelType(Imath.PixelType.FLOAT)) for c in rgb_channels]
-    
-    rgb_vectors = [np.frombuffer(bytes, dtype=np.float32) for bytes in raw_bytes]
-    rgb_maps = [vec.reshape(size[1], size[0]) for vec in rgb_vectors]
-    rgb_map = np.stack(rgb_maps, axis=-1)
-    
-    # Some of this is probably less efficient than it could be... whatever ¯\_(ツ)_/¯
-    img = Image.fromarray((rgb_map * 255).astype(np.uint8))
-    resized_img = img.resize((resize_width, resize_height))
-    
-    target_np = np.array(resized_img)
-    target_np_norm = target_np.astype(np.float32) / 255.0
-    target_wp = wp.array(target_np_norm, dtype=wp.vec3)
-    
-    return target_wp
+@wp.kernel
+def bake(width: int, height: int, 
+         pixels: wp.array(dtype=wp.vec3),
+         l_param: int,
+         skybox: wp.array(dtype=wp.vec3, ndim=2),
+         seed: int,
+         sh_coeffs_out: wp.array(dtype=wp.vec3)):
 
-def load_image(path, resize_width, resize_height):
-    file_extension = os.path.splitext(path)[1].lower()
-    
-    if file_extension == '.exr':
-        return load_exr(path, resize_width, resize_height)
-    else:
-        target_base = Image.open(os.path.relpath(path))
-        target_resized = target_base.resize((resize_width, resize_height))
-        target_np = np.array(target_resized)
+    tid = wp.tid()
+    state = wp.rand_init(seed, tid)
 
-        if target_np.shape[2] == 4:
-            target_np = target_np[:, :, :3]
-        if target_np.shape[2] != 3:
-            raise ValueError("Image must be RGB or RGBA to be converted to vec3.")
+    dir = wp.normalize( wp.vec3(wp.randf(state), wp.randf(state), wp.randf(state)) )
+    dir_spherical = cartesian_to_spherical(dir)
 
-        target_np_norm = target_np.astype(np.float32) / 255.0
-        target_wp = wp.array(target_np_norm, dtype=wp.vec3)
+    color = sample_skybox(dir_spherical, skybox)
 
-        return target_wp
+    for l in range(l_param):
+        for m in range(-l, l + 1):
+            index = sh_index(l, m)
+            y_lm = spherical_harmonic_real(l, m, dir_spherical.x, dir_spherical.y)
+            contribution = color * y_lm * (4.0 * wp.pi) / float(BAKE_SAMPLE_COUNT)
+            wp.atomic_add(sh_coeffs_out, index, contribution)
 
 class Example:
     def __init__(self, height=1024, width=1024):
@@ -190,11 +140,15 @@ class Example:
         self.color_max = 1.0
         
         # Spherical harmonic parameters
-        self.l_param = 2  # Degree
+        self.l_param = 6  # Degree
         self.m_param = 1  # Order
 
         self.pixels = wp.zeros(self.width * self.height, dtype=wp.vec3)
         self.skybox = load_image(SKYBOX_PATH, 1024, 1024)
+
+        self.max_l = 10
+        num_coeffs = (self.max_l + 1) * (self.max_l + 1)
+        self.sh_coeffs = wp.zeros(num_coeffs, dtype=wp.vec3)
 
     def update_camera(self):
         # Update camera angle
@@ -209,6 +163,34 @@ class Example:
 
         self.frame += 1
 
+    def bake(self):
+        self.sh_coeffs.zero_()
+
+        print("SH coefficient mapping:")
+        for l in range(self.l_param):
+            for m in range(-l, l + 1):
+                index = sh_index(l, m)
+                print(f"  Index {index}: l={l}, m={m}")
+
+        wp.launch(
+            kernel=bake,
+            dim=BAKE_SAMPLE_COUNT,
+            inputs=[self.width, self.height, 
+                    self.pixels,
+                    self.l_param,
+                    self.skybox,
+                    164,
+                    self.sh_coeffs],
+        )
+        wp.synchronize()
+
+        coeffs_np = self.sh_coeffs.numpy()
+        for l in range(self.l_param):
+            for m in range(-l, l + 1):
+                index = sh_index(l, m)
+                if index < len(coeffs_np):
+                    print(f"l={l}, m={m}, index={index}: {coeffs_np[index]}")
+
     def render(self):
         with wp.ScopedTimer("render"):
             self.update_camera()
@@ -218,7 +200,9 @@ class Example:
                 inputs=[self.cam_pos, self.width, self.height, 
                         self.pixels, self.color_min, self.color_max,
                         self.l_param, self.m_param,
-                        self.skybox],
+                        self.skybox,
+                        145,
+                        self.sh_coeffs],
             )
 
 if __name__ == "__main__":
@@ -272,7 +256,7 @@ if __name__ == "__main__":
             # Create RangeSlider for color mapping
             s_range = RangeSlider(ax_range, 'Value Range', -10.0, 10.0, 
                                  valinit=(example.color_min, example.color_max))
-            s_l = Slider(ax_l, 'Degree (l)', 0, 10, valinit=example.l_param, valstep=1)
+            s_l = Slider(ax_l, 'Degree (l)', 0, example.max_l, valinit=example.l_param, valstep=1)
             s_m = Slider(ax_m, 'Order (m)', -10, 10, valinit=example.m_param, valstep=1)
             s_speed = Slider(ax_speed, 'Speed', 0.0, 0.5, valinit=example.pan_speed)
             
@@ -288,6 +272,8 @@ if __name__ == "__main__":
                     s_m.set_val(valid_m)
                 example.m_param = valid_m
                 example.pan_speed = s_speed.val
+
+                example.bake() # (should only really need to rebake if l change)
                 
             s_range.on_changed(update_sliders)
             s_l.on_changed(update_sliders)
@@ -313,9 +299,10 @@ if __name__ == "__main__":
                 img.set_array(example.pixels.numpy().reshape((example.height, example.width, 3)))
                 return [img]
             
+            example.bake()
             ani = FuncAnimation(fig, update, frames=args.frames, interval=10, blit=True)
             plt.show()
         else:
-            # Render frames without visualization
+            example.bake()
             for i in range(args.frames):
                 example.render()
