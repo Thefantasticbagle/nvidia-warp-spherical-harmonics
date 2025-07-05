@@ -3,7 +3,7 @@ Just experimenting with nvidia warp and vibecoding 8) <br>
 
 - 📚 All documentation is AI-generated
 - 🔬 100% experimental, 0% proofread guarantee
-- 🤖 No files written by humans - pure AI collaboration
+- 🤖 No files written entirely by humans
 
 ## Overview
 This project demonstrates spherical harmonics visualization and image-based lighting using NVIDIA's Warp framework. It provides an interactive application to visualize spherical harmonics of different degrees and orders, and demonstrates the use of spherical harmonics for environment map encoding.
