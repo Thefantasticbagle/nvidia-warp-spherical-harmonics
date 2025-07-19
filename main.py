@@ -1,17 +1,18 @@
 #!/home/lars/projects/nvidia-warp-stuff/venv/bin/python3.12
 
 # SKYBOX_PATH = "img/blaubeuren_night_4k.exr"
-SKYBOX_PATH = "img/meadow_2_4k.png"
+# SKYBOX_PATH = "img/meadow_2_4k.png"
 # SKYBOX_PATH = "img/meadow_2_4k.exr"
 # SKYBOX_PATH = "img/studio_small_09_4k.exr"
 # SKYBOX_PATH = "img/studio_small_09_4k.png"
-BAKE_SAMPLE_COUNT = 6000
-# SKYBOX_PATH = "img/blaubeuren_night_4k.png"
+BAKE_SAMPLE_COUNT = 1000
+SKYBOX_PATH = "img/blaubeuren_night_4k.png"
 
 import numpy as np
 import warp as wp
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, RangeSlider
+import time
 
 from raytrace_fun import *
 from spherical_fun import *
@@ -54,7 +55,8 @@ def draw(cam_pos: wp.vec3, width: int, height: int,
          l_param: int, m_param: int,
          skybox: wp.array(dtype=wp.vec3, ndim=2),
          seed: int,
-         sh_coeffs: wp.array(dtype=wp.vec3)):
+         sh_coeffs: wp.array(dtype=wp.vec3),
+         skybox_attrs: Skybox_attributes):
     tid = wp.tid()
 
     x = tid % width
@@ -99,7 +101,7 @@ def draw(cam_pos: wp.vec3, width: int, height: int,
 
         color = wp.min(wp.max(color, wp.vec3(0.0)), wp.vec3(1.0))
     else:
-        color = sample_skybox(rd_spherical, skybox)
+        color = sample_skybox(rd_spherical, skybox, skybox_attrs)
 
     pixels[tid] = color
 
@@ -109,7 +111,8 @@ def bake(width: int, height: int,
          l_param: int,
          skybox: wp.array(dtype=wp.vec3, ndim=2),
          seed: int,
-         sh_coeffs_out: wp.array(dtype=wp.vec3)):
+         sh_coeffs_out: wp.array(dtype=wp.vec3),
+         skybox_attrs: Skybox_attributes):
 
     tid = wp.tid()
     state = wp.rand_init(seed, tid)
@@ -117,7 +120,7 @@ def bake(width: int, height: int,
     dir = wp.normalize( wp.vec3(wp.randf(state), wp.randf(state), wp.randf(state)) )
     dir_spherical = cartesian_to_spherical(dir)
 
-    color = sample_skybox(dir_spherical, skybox)
+    color = sample_skybox(dir_spherical, skybox, skybox_attrs)
 
     for l in range(l_param):
         for m in range(-l, l + 1):
@@ -155,10 +158,12 @@ class Example:
 
         self.pixels = wp.zeros(self.width * self.height, dtype=wp.vec3)
         self.skybox = load_image(SKYBOX_PATH, 1024, 1024)
+        self.skybox_attributes = Skybox_attributes()
+        self.skybox_attributes.rotation = wp.vec2(0.0, 0.0)
 
         self.max_l = 10
-        num_coeffs = (self.max_l + 1) * (self.max_l + 1)
-        self.sh_coeffs = wp.zeros(num_coeffs, dtype=wp.vec3)
+        self.num_coeffs = (self.max_l + 1) * (self.max_l + 1)
+        self.sh_coeffs = wp.zeros(self.num_coeffs, dtype=wp.vec3)
 
     def _calculate_camera_position(self):
         """Calculate camera position from spherical coordinates, always looking at origin"""
@@ -214,11 +219,7 @@ class Example:
     def bake(self):
         self.sh_coeffs.zero_()
 
-        print("SH coefficient mapping:")
-        for l in range(self.l_param):
-            for m in range(-l, l + 1):
-                index = sh_index(l, m)
-                print(f"  Index {index}: l={l}, m={m}")
+        seed = int((time.time() * 1000) % 10000)
 
         wp.launch(
             kernel=bake,
@@ -227,19 +228,15 @@ class Example:
                     self.pixels,
                     self.l_param,
                     self.skybox,
-                    164,
-                    self.sh_coeffs],
+                    seed,
+                    self.sh_coeffs,
+                    self.skybox_attributes],
         )
         wp.synchronize()
 
-        coeffs_np = self.sh_coeffs.numpy()
-        for l in range(self.l_param):
-            for m in range(-l, l + 1):
-                index = sh_index(l, m)
-                if index < len(coeffs_np):
-                    print(f"l={l}, m={m}, index={index}: {coeffs_np[index]}")
-
     def render(self):
+        seed = int((time.time() * 1000) % 10000)
+
         with wp.ScopedTimer("render"):
             wp.launch(
                 kernel=draw,
@@ -248,8 +245,9 @@ class Example:
                         self.pixels, self.color_min, self.color_max,
                         self.l_param, self.m_param,
                         self.skybox,
-                        145,
-                        self.sh_coeffs],
+                        seed,
+                        self.sh_coeffs,
+                        self.skybox_attributes],
             )
             self.frame += 1
 
@@ -353,6 +351,11 @@ if __name__ == "__main__":
             
             def update(frame):
                 # Render new frame
+                if (frame):
+                    print("Clearing coeffs!")
+                    example.sh_coeffs = wp.zeros(example.num_coeffs, dtype=wp.vec3)
+                example.skybox_attributes.rotation += wp.vec2(0.0, 1.0) * 0.01
+                example.bake()
                 example.render()
                 # Update the plot data
                 img.set_array(example.pixels.numpy().reshape((example.height, example.width, 3)))

@@ -11,6 +11,10 @@ import OpenEXR as exr
 import Imath
 from pathlib import Path
 
+@wp.struct
+class Skybox_attributes:
+    rotation: wp.vec2
+
 @wp.func
 def map_value_to_color(value: float, min_val: float, max_val: float) -> wp.vec3:
     # Normalize value to [0,1] range for hue
@@ -95,7 +99,9 @@ def load_image(path, resize_width, resize_height):
         return target_wp
 
 @wp.func
-def sample_skybox(spherical_coords: wp.vec2, skybox: wp.array(dtype=wp.vec3, ndim=2)) -> wp.vec3:
+def sample_skybox(spherical_coords: wp.vec2, skybox: wp.array(dtype=wp.vec3, ndim=2), skybox_attrs: Skybox_attributes) -> wp.vec3:
+    spherical_coords -= skybox_attrs.rotation # inverse rotation
+
     # Map spherical coordinates to [0, 1] with phi adjusted by π to fix orientation
     u = (spherical_coords.y + wp.pi) / (2.0 * wp.pi)  # phi maps to u (horizontal) with offset
     v = spherical_coords.x / wp.pi                    # theta maps to v (vertical)
