@@ -130,9 +130,19 @@ class Example:
     def __init__(self, height=1024, width=1024):
         self.height = height
         self.width = width
-        self.cam_pos = wp.vec3(0.0, 1.0, 2.0)
-        self.cam_angle = 0.0  # Camera rotation angle around Y axis
-        self.pan_speed = 0.01  # Increased for faster animation
+        
+        # Camera control parameters
+        self.cam_radius = 3.0
+        self.cam_theta = 0.0  # Azimuthal angle
+        self.cam_phi = np.pi / 6  # Polar angle (start slightly above equator)
+        self.cam_pos = self._calculate_camera_position()
+        
+        # Mouse interaction state
+        self.mouse_down = False
+        self.last_mouse_x = 0
+        self.last_mouse_y = 0
+        self.mouse_sensitivity = 0.005
+        
         self.frame = 0
         
         # Color mapping range parameters
@@ -150,18 +160,56 @@ class Example:
         num_coeffs = (self.max_l + 1) * (self.max_l + 1)
         self.sh_coeffs = wp.zeros(num_coeffs, dtype=wp.vec3)
 
-    def update_camera(self):
-        # Update camera angle
-        self.cam_angle += self.pan_speed
-        
-        radius = 3.0
-        self.cam_pos = wp.vec3(
-            radius * np.sin(self.cam_angle),
-            1.0,
-            radius * np.cos(self.cam_angle)
-        )
+    def _calculate_camera_position(self):
+        """Calculate camera position from spherical coordinates, always looking at origin"""
+        x = self.cam_radius * np.sin(self.cam_phi) * np.cos(self.cam_theta)
+        y = self.cam_radius * np.cos(self.cam_phi)
+        z = self.cam_radius * np.sin(self.cam_phi) * np.sin(self.cam_theta)
+        return wp.vec3(x, y, z)
 
-        self.frame += 1
+    def update_camera_from_mouse(self, dx, dy):
+        """Update camera angles based on mouse movement"""
+        if self.mouse_down:
+            # Update azimuthal angle (horizontal rotation)
+            self.cam_theta += dx * self.mouse_sensitivity
+            
+            # Update polar angle (vertical rotation), clamped to avoid gimbal lock
+            self.cam_phi -= dy * self.mouse_sensitivity
+            self.cam_phi = np.clip(self.cam_phi, 0.1, np.pi - 0.1)
+            
+            # Recalculate camera position
+            self.cam_pos = self._calculate_camera_position()
+
+    def on_mouse_press(self, event):
+        """Handle mouse press events"""
+        if event.inaxes and event.button == 1:  # Left mouse button
+            self.mouse_down = True
+            self.last_mouse_x = event.xdata
+            self.last_mouse_y = event.ydata
+
+    def on_mouse_release(self, event):
+        """Handle mouse release events"""
+        if event.button == 1:  # Left mouse button
+            self.mouse_down = False
+
+    def on_mouse_move(self, event):
+        """Handle mouse movement events"""
+        if self.mouse_down and event.inaxes and event.xdata and event.ydata:
+            dx = event.xdata - self.last_mouse_x
+            dy = event.ydata - self.last_mouse_y
+            
+            self.update_camera_from_mouse(dx, dy)
+            
+            self.last_mouse_x = event.xdata
+            self.last_mouse_y = event.ydata
+
+    def on_scroll(self, event):
+        """Handle mouse wheel scroll for zoom"""
+        if event.inaxes:
+            zoom_factor = 1.1 if event.step < 0 else 1.0 / 1.1
+            self.cam_radius *= zoom_factor
+            self.cam_radius = np.clip(self.cam_radius, 1.5, 10.0)  # Limit zoom range
+            self.cam_pos = self._calculate_camera_position()
 
     def bake(self):
         self.sh_coeffs.zero_()
@@ -193,7 +241,6 @@ class Example:
 
     def render(self):
         with wp.ScopedTimer("render"):
-            self.update_camera()
             wp.launch(
                 kernel=draw,
                 dim=self.width * self.height,
@@ -204,6 +251,7 @@ class Example:
                         145,
                         self.sh_coeffs],
             )
+            self.frame += 1
 
 if __name__ == "__main__":
     import argparse
@@ -244,21 +292,27 @@ if __name__ == "__main__":
                 interpolation="antialiased"
             )
             
+            # Connect mouse events
+            fig.canvas.mpl_connect('button_press_event', example.on_mouse_press)
+            fig.canvas.mpl_connect('button_release_event', example.on_mouse_release)
+            fig.canvas.mpl_connect('motion_notify_event', example.on_mouse_move)
+            fig.canvas.mpl_connect('scroll_event', example.on_scroll)
+            
             ax_range = plt.axes([0.25, 0.1, 0.65, 0.03])
             
             # Add sliders for spherical harmonic parameters
             ax_l = plt.axes([0.25, 0.15, 0.65, 0.03])
             ax_m = plt.axes([0.25, 0.2, 0.65, 0.03])
             
-            # Add slider for animation speed
-            ax_speed = plt.axes([0.25, 0.05, 0.65, 0.03])
+            # Add slider for mouse sensitivity
+            ax_sensitivity = plt.axes([0.25, 0.05, 0.65, 0.03])
             
             # Create RangeSlider for color mapping
             s_range = RangeSlider(ax_range, 'Value Range', -10.0, 10.0, 
                                  valinit=(example.color_min, example.color_max))
             s_l = Slider(ax_l, 'Degree (l)', 0, example.max_l, valinit=example.l_param, valstep=1)
             s_m = Slider(ax_m, 'Order (m)', -10, 10, valinit=example.m_param, valstep=1)
-            s_speed = Slider(ax_speed, 'Speed', 0.0, 0.5, valinit=example.pan_speed)
+            s_sensitivity = Slider(ax_sensitivity, 'Mouse Sensitivity', 0.001, 0.02, valinit=example.mouse_sensitivity)
             
             def update_sliders(val):
                 # Get the range values from the RangeSlider
@@ -271,14 +325,14 @@ if __name__ == "__main__":
                 if valid_m != s_m.val:
                     s_m.set_val(valid_m)
                 example.m_param = valid_m
-                example.pan_speed = s_speed.val
+                example.mouse_sensitivity = s_sensitivity.val
 
                 example.bake() # (should only really need to rebake if l change)
                 
             s_range.on_changed(update_sliders)
             s_l.on_changed(update_sliders)
             s_m.on_changed(update_sliders)
-            s_speed.on_changed(update_sliders)
+            s_sensitivity.on_changed(update_sliders)
             
             # Add a reset button
             reset_button_ax = plt.axes([0.8, 0.25, 0.1, 0.04])
@@ -288,7 +342,12 @@ if __name__ == "__main__":
                 s_l.reset()
                 s_m.reset()
                 s_range.reset()
-                s_speed.reset()
+                s_sensitivity.reset()
+                # Reset camera position
+                example.cam_theta = 0.0
+                example.cam_phi = np.pi / 6
+                example.cam_radius = 3.0
+                example.cam_pos = example._calculate_camera_position()
                 
             reset_button.on_clicked(reset_params)
             
@@ -299,10 +358,15 @@ if __name__ == "__main__":
                 img.set_array(example.pixels.numpy().reshape((example.height, example.width, 3)))
                 return [img]
             
+            # Add instructions text
+            plt.figtext(0.02, 0.97, 'Mouse Controls: Drag to rotate camera, Scroll to zoom', 
+                       fontsize=10, ha='left', va='top')
+            
             example.bake()
-            ani = FuncAnimation(fig, update, frames=args.frames, interval=10, blit=True)
+            ani = FuncAnimation(fig, update, frames=args.frames, interval=50, blit=True)
             plt.show()
         else:
             example.bake()
             for i in range(args.frames):
                 example.render()
+
