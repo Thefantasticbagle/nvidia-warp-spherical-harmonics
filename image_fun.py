@@ -96,11 +96,15 @@ def load_image(path, resize_width, resize_height):
 
 @wp.func
 def sample_skybox(spherical_coords: wp.vec2, skybox: wp.array(dtype=wp.vec3, ndim=2)) -> wp.vec3:
-    # Map spherical coordinates to [0, 1]
-    u = spherical_coords.y / (2.0 * wp.pi)  # phi maps to u (horizontal)
-    v = spherical_coords.x / wp.pi           # theta maps to v (vertical)
+    # Map spherical coordinates to [0, 1] with phi adjusted by π to fix orientation
+    u = (spherical_coords.y + wp.pi) / (2.0 * wp.pi)  # phi maps to u (horizontal) with offset
+    v = spherical_coords.x / wp.pi                    # theta maps to v (vertical)
 
     width = skybox.shape[1]
     height = skybox.shape[0]
 
+    # Ensure u is within [0,1] range (add π could push it out of range)
+    u = u - wp.floor(u)
+
     return skybox[int(v*float(height))][int(u*float(width))]
+
