@@ -351,18 +351,15 @@ def associated_legendre(l: int, m: int, x: float) -> float:
         elif m == 6: res = 10395.0 * s2*s2*s2
     elif l == 7:
         x3 = x*x2; x4 = x2*x2; x5 = x*x4; x6 = x2*x4
-        s3 = s*s2; s4=s2*s2; s5=s*s4; s6=s2*s4
+        s3 = s*s2; s4=s2*s2; s5=s*s4; s6=s2*s4; s7=s*s6
         if m == 0: res = 0.0625 * x * (429.0*x6 - 693.0*x4 + 315.0*x2 - 35.0)
         elif m == 1: res = - (1.0/16.0) * (3003.0*x6 - 3465.0*x4 + 945.0*x2 - 35.0) * s
         elif m == 2: res = 13.125 * x * (143.0*x4 - 110.0*x2 + 15.0) * s2
-        elif m == 3: res = -94.5 * (143.0*x4 - 110.0*x2 + 15.0) * s3 # Correction: used the derivative form, oops. Should be: (143x^4-..)
-        elif m == 3: res = - (105.0/2.0) * (143.0*x4 - 90.0*x2 + 5.0) * s3 # No x in this one
-        elif m == 3: res = -2.625 * (143.0*x4 - 90.0*x2 + 5.0) * s3 # Re-checking this one...
         elif m == 3: res = -94.5 * (13.0 * x2 * x2 - 10.0*x2 + 1.0) * s3 # Simpler form
         elif m == 4: res = 3465.0 * x * (13.0*x2 - 3.0) * s4
         elif m == 5: res = -62370.0 * (15.0*x2 - 1.0) * s5
-        elif m == 6: res = 10395.0 * x * s * s2*s2*s2
-        elif m == 7: res = -135135.0 * s * s2*s2*s2*s
+        elif m == 6: res = 135135.0 * x * s6
+        elif m == 7: res = -135135.0 * s7
     elif l == 8:
         x2=x*x; x4=x2*x2; x6=x2*x4; x8=x4*x4
         s2=s*s; s4=s2*s2; s6=s2*s4; s7=s*s6; s8=s4*s4
@@ -466,3 +463,8 @@ def spherical_harmonic_real(l: int, m: int, theta: float, phi: float) -> float:
             return norm * plm * wp.cos(float(m) * phi)
         else:  # m < 0
             return norm * plm * wp.sin(float(wp.abs(m)) * phi)
+
+
+
+
+

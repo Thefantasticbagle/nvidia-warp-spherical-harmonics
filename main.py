@@ -1,12 +1,12 @@
 #!/home/lars/projects/nvidia-warp-stuff/venv/bin/python3.12
 
 # SKYBOX_PATH = "img/blaubeuren_night_4k.exr"
-# SKYBOX_PATH = "img/meadow_2_4k.png"
+SKYBOX_PATH = "img/meadow_2_4k.png"
 # SKYBOX_PATH = "img/meadow_2_4k.exr"
 # SKYBOX_PATH = "img/studio_small_09_4k.exr"
 # SKYBOX_PATH = "img/studio_small_09_4k.png"
-BAKE_SAMPLE_COUNT = 1000
-SKYBOX_PATH = "img/blaubeuren_night_4k.png"
+BAKE_SAMPLE_COUNT = 6000
+# SKYBOX_PATH = "img/blaubeuren_night_4k.png"
 
 import numpy as np
 import warp as wp
@@ -35,7 +35,7 @@ def cartesian_to_spherical(v: wp.vec3) -> wp.vec2:
     Converts a 3D Cartesian vector to Spherical coordinates (theta, phi)
     using a Y-up coordinate system.
     theta: polar angle from the Y-axis [0, pi]
-    phi: azimuthal angle in the XZ-plane [-pi, pi]
+    phi: azimuthal angle in the XZ-plane [0, 2*pi]
     """
     r = wp.length(v)
     if r < 1e-8:
@@ -45,6 +45,9 @@ def cartesian_to_spherical(v: wp.vec3) -> wp.vec2:
     
     # Y-up convention
     phi = wp.atan2(v_norm.z, v_norm.x)
+    # Convert from [-pi, pi] to [0, 2*pi]
+    if phi < 0.0:
+        phi += 2.0 * wp.pi
     theta = wp.acos(wp.clamp(v_norm.y, -1.0, 1.0))
     
     return wp.vec2(theta, phi)
@@ -117,8 +120,22 @@ def bake(width: int, height: int,
     tid = wp.tid()
     state = wp.rand_init(seed, tid)
 
-    dir = wp.normalize( wp.vec3(wp.randf(state), wp.randf(state), wp.randf(state)) )
-    dir_spherical = cartesian_to_spherical(dir)
+    # Generate uniform random direction on sphere using proper method
+    u1 = wp.randf(state)
+    u2 = wp.randf(state)
+    
+    # Convert to spherical coordinates with uniform distribution
+    theta = wp.acos(1.0 - 2.0 * u1)  # Uniform in cos(theta)
+    phi = 2.0 * wp.pi * u2           # Uniform in phi
+    
+    # Convert to Cartesian
+    sin_theta = wp.sin(theta)
+    cos_theta = wp.cos(theta)
+    sin_phi = wp.sin(phi)
+    cos_phi = wp.cos(phi)
+    
+    dir = wp.vec3(sin_theta * cos_phi, cos_theta, sin_theta * sin_phi)
+    dir_spherical = wp.vec2(theta, phi)
 
     color = sample_skybox(dir_spherical, skybox, skybox_attrs)
 
@@ -155,6 +172,9 @@ class Example:
         # Spherical harmonic parameters
         self.l_param = 6  # Degree
         self.m_param = 1  # Order
+        
+        # Skybox rotation parameters
+        self.skybox_rotation_speed = 0.01
 
         self.pixels = wp.zeros(self.width * self.height, dtype=wp.vec3)
         self.skybox = load_image(SKYBOX_PATH, 1024, 1024)
@@ -217,8 +237,6 @@ class Example:
             self.cam_pos = self._calculate_camera_position()
 
     def bake(self):
-        self.sh_coeffs.zero_()
-
         seed = int((time.time() * 1000) % 10000)
 
         wp.launch(
@@ -305,12 +323,16 @@ if __name__ == "__main__":
             # Add slider for mouse sensitivity
             ax_sensitivity = plt.axes([0.25, 0.05, 0.65, 0.03])
             
+            # Add slider for skybox rotation speed
+            ax_rotation_speed = plt.axes([0.25, 0.0, 0.65, 0.03])
+            
             # Create RangeSlider for color mapping
             s_range = RangeSlider(ax_range, 'Value Range', -10.0, 10.0, 
                                  valinit=(example.color_min, example.color_max))
             s_l = Slider(ax_l, 'Degree (l)', 0, example.max_l, valinit=example.l_param, valstep=1)
             s_m = Slider(ax_m, 'Order (m)', -10, 10, valinit=example.m_param, valstep=1)
             s_sensitivity = Slider(ax_sensitivity, 'Mouse Sensitivity', 0.001, 0.02, valinit=example.mouse_sensitivity)
+            s_rotation_speed = Slider(ax_rotation_speed, 'Skybox Rotation Speed', 0.0, 0.2, valinit=example.skybox_rotation_speed)
             
             def update_sliders(val):
                 # Get the range values from the RangeSlider
@@ -324,6 +346,7 @@ if __name__ == "__main__":
                     s_m.set_val(valid_m)
                 example.m_param = valid_m
                 example.mouse_sensitivity = s_sensitivity.val
+                example.skybox_rotation_speed = s_rotation_speed.val
 
                 example.bake() # (should only really need to rebake if l change)
                 
@@ -331,6 +354,7 @@ if __name__ == "__main__":
             s_l.on_changed(update_sliders)
             s_m.on_changed(update_sliders)
             s_sensitivity.on_changed(update_sliders)
+            s_rotation_speed.on_changed(update_sliders)
             
             # Add a reset button
             reset_button_ax = plt.axes([0.8, 0.25, 0.1, 0.04])
@@ -341,6 +365,7 @@ if __name__ == "__main__":
                 s_m.reset()
                 s_range.reset()
                 s_sensitivity.reset()
+                s_rotation_speed.reset()
                 # Reset camera position
                 example.cam_theta = 0.0
                 example.cam_phi = np.pi / 6
@@ -351,10 +376,9 @@ if __name__ == "__main__":
             
             def update(frame):
                 # Render new frame
-                if (frame):
-                    print("Clearing coeffs!")
-                    example.sh_coeffs = wp.zeros(example.num_coeffs, dtype=wp.vec3)
-                example.skybox_attributes.rotation += wp.vec2(0.0, 1.0) * 0.01
+                example.skybox_attributes.rotation += wp.vec2(0.0, 1.0 * example.skybox_rotation_speed)
+                if (frame % 1 == 0):
+                    example.sh_coeffs.zero_() # clear (every frame for now)
                 example.bake()
                 example.render()
                 # Update the plot data
@@ -372,4 +396,11 @@ if __name__ == "__main__":
             example.bake()
             for i in range(args.frames):
                 example.render()
+
+
+
+
+
+
+
 
