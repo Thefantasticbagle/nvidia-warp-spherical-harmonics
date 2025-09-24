@@ -1,5 +1,6 @@
 # nvidia-warp-spherical-harmonics
 Just experimenting with nvidia warp and vibecoding 8) <br>
+https://www.youtube.com/watch?v=JeNS1ZNHQs8
 
 - 📚 All documentation is AI-generated
 - 🔬 100% experimental, 0% proofread guarantee
